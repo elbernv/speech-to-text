@@ -55,6 +55,38 @@ STT_STOP_KEY=esc uv run transcribe.py --live
 
 The terminal must have focus for the stop key to be detected.
 
+### Type mode (Windows)
+
+```bash
+uv run transcribe.py --type
+```
+
+Dictate into **any app** (editor, terminal, browser, chat box...). The script
+runs in the background and types the text into the window that has focus:
+
+1. Put the cursor where you want the text.
+2. Press `Ctrl+Alt+Space` and speak. Each time you pause, that part is typed
+   into the focused window (the live draft is shown in the script's console).
+3. Finish with either:
+   - `Enter`: types the last part and then presses `Enter` (e.g. sends the
+     message).
+   - `Ctrl+Alt+Space` again: types the last part without pressing anything.
+
+While dictating, `Shift+Enter` and any other key reach the app normally. Press
+`Ctrl+C` in the script's console to quit.
+
+Configuration:
+
+| Variable       | Default          | Example                          |
+|----------------|------------------|----------------------------------|
+| `STT_HOTKEY`   | `ctrl+alt+space` | `ctrl+shift+d`, `f9`, `win+alt+h` |
+| `STT_STOP_KEY` | `enter`          | `esc`, `tab`                     |
+
+Modifiers: `ctrl`, `alt`, `shift`, `win`. Keys: a letter/digit, `space`,
+`enter`, `esc`, `tab`, `pause`, `insert`, `scrolllock`, `f1`–`f24`. Both keys
+are captured system-wide while the script runs, so the focused app does not
+receive them.
+
 ## Automatic model selection
 
 | Detected hardware | Device | Default model |

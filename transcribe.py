@@ -4,6 +4,7 @@ Microphone dictation -> text, using faster-whisper.
 Usage:
     uv run transcribe.py           # record, then transcribe
     uv run transcribe.py --live    # transcribe while you speak
+    uv run transcribe.py --type    # global hotkey, types into the focused window
 
 Flow:
     [Enter]  start recording
@@ -13,12 +14,14 @@ Flow:
 """
 
 import argparse
+import ctypes
 import os
 import shutil
 import site
 import sys
 import threading
 import time
+from collections.abc import Callable
 
 # --- Windows: make ctranslate2 find the CUDA DLLs (cuBLAS/cuDNN)
 # installed by pip under site-packages/nvidia/**/bin.
@@ -69,6 +72,7 @@ LIVE_PAUSE_MS = 600            # pause that closes a segment and makes it final
 LIVE_MAX_SEGMENT_S = 20        # force a cut if someone talks without pausing
 LIVE_PARTIAL_INTERVAL_S = 0.5  # minimum time between partial updates
 LIVE_VAD = VadOptions(min_silence_duration_ms=LIVE_PAUSE_MS, speech_pad_ms=200)
+DEFAULT_HOTKEY = "ctrl+alt+space"   # --type mode, change with STT_HOTKEY
 STOP_KEYS = {
     "enter": ("\r", "\n"),
     "space": (" ",),
@@ -258,8 +262,11 @@ def find_cut(audio: np.ndarray) -> tuple[int, bool]:
         # Only silence: drop it, but keep a tail in case speech is starting.
         return max(0, audio.size - SAMPLE_RATE), False
     if speech[-1]["end"] < audio.size:
-        # The VAD closed the last chunk, so there was a pause after it.
-        return speech[-1]["end"], True
+        # The VAD closed the last chunk, so there was a pause after it. Keep
+        # most of that silence (helps Whisper end the sentence with
+        # punctuation), but not the newest bit: it may be the onset of the
+        # next word that the VAD has not picked up yet.
+        return max(speech[-1]["end"], audio.size - int(0.4 * SAMPLE_RATE)), True
     if audio.size > LIVE_MAX_SEGMENT_S * SAMPLE_RATE:
         # No pause for too long: cut at the last gap between chunks, if any.
         if len(speech) > 1:
@@ -268,8 +275,15 @@ def find_cut(audio: np.ndarray) -> tuple[int, bool]:
     return 0, False
 
 
-def live_session(model: WhisperModel, stop_keys: tuple[str, ...], key_label: str) -> str:
-    """Transcribe while the user speaks until a stop key is pressed."""
+def live_session(
+    model: WhisperModel,
+    should_stop: Callable[[], bool],
+    on_final: Callable[[str], None] | None = None,
+) -> str:
+    """Transcribe while the user speaks until should_stop() returns True.
+
+    on_final is called with each segment as soon as it becomes final.
+    """
     chunks: list[np.ndarray] = []
     lock = threading.Lock()
     buffer = np.zeros(0, dtype=np.float32)
@@ -294,6 +308,8 @@ def live_session(model: WhisperModel, stop_keys: tuple[str, ...], key_label: str
         text = run_whisper(model, audio, prompt=" ".join(final)[-200:])
         if text:
             final.append(text)
+            if on_final:
+                on_final(text)
         show_live(" ".join(final))
 
     with sd.InputStream(
@@ -301,9 +317,8 @@ def live_session(model: WhisperModel, stop_keys: tuple[str, ...], key_label: str
         channels=1,
         dtype="float32",
         callback=callback,
-    ), KeyReader() as keys:
-        print(f"  🔴 Live... press [{key_label}] to stop")
-        while not keys.pressed(stop_keys):
+    ):
+        while not should_stop():
             drain()
             if buffer.size < SAMPLE_RATE // 2:
                 time.sleep(0.05)
@@ -328,24 +343,173 @@ def live_session(model: WhisperModel, stop_keys: tuple[str, ...], key_label: str
     return " ".join(final)
 
 
+# ------------------------------- Type mode -------------------------------
+# Windows only: a global hotkey starts/stops live dictation and the final text
+# is typed into whatever window has focus.
+VK_NAMES = {
+    "enter": 0x0D, "space": 0x20, "esc": 0x1B, "tab": 0x09, "pause": 0x13,
+    "insert": 0x2D, "scrolllock": 0x91,
+    **{f"f{i}": 0x6F + i for i in range(1, 25)},
+}
+MODIFIER_VKS = {"ctrl": (0x11,), "alt": (0x12,), "shift": (0x10,), "win": (0x5B, 0x5C)}
+WM_KEYDOWN, WM_SYSKEYDOWN = 0x0100, 0x0104
+LLKHF_INJECTED = 0x10 | 0x02                               # sent by a program
+
+
+def key_vk(name: str) -> int:
+    """Windows virtual-key code for a key name (enter, f9, a, ...)."""
+    name = name.strip().lower()
+    if name in VK_NAMES:
+        return VK_NAMES[name]
+    if len(name) == 1:
+        user32 = ctypes.WinDLL("user32")                   # own handle, own argtypes
+        user32.VkKeyScanW.argtypes = [ctypes.c_wchar]
+        user32.VkKeyScanW.restype = ctypes.c_short
+        vk = user32.VkKeyScanW(name) & 0xFF
+        if vk != 0xFF:
+            return vk
+    raise SystemExit(
+        f"Unknown key: {name!r}. Use one of {', '.join(VK_NAMES)} or a single character."
+    )
+
+
+def parse_hotkey(spec: str) -> tuple[frozenset[str], int]:
+    """'ctrl+alt+space' -> ({'ctrl', 'alt'}, VK_SPACE)."""
+    *mods, key = [part.strip().lower() for part in spec.split("+")]
+    unknown = set(mods) - MODIFIER_VKS.keys()
+    if unknown:
+        raise SystemExit(
+            f"Unknown modifier(s) in STT_HOTKEY: {', '.join(sorted(unknown))}. "
+            f"Use {', '.join(MODIFIER_VKS)}."
+        )
+    return frozenset(mods), key_vk(key)
+
+
+def held_modifiers() -> frozenset[str]:
+    state = ctypes.windll.user32.GetAsyncKeyState
+    return frozenset(
+        mod for mod, vks in MODIFIER_VKS.items() if any(state(vk) & 0x8000 for vk in vks)
+    )
+
+
+class GlobalKeys:
+    """System-wide hotkey (start/stop) and stop key.
+
+    Both are swallowed so the focused app never sees them. The stop key only
+    counts while dictating and without modifiers (so Shift+Enter still works);
+    it is sent again once the last text has been typed.
+    """
+
+    def __init__(self, hotkey: str, stop_key: str):
+        from pynput import keyboard
+
+        self._mods, self._hot_vk = parse_hotkey(hotkey)
+        self.stop_vk = key_vk(stop_key)
+        self._swallowed: set[int] = set()
+        self.toggle = threading.Event()
+        self.active = False
+        self.stopped_with_key = False
+        self._listener = keyboard.Listener(win32_event_filter=self._filter)
+
+    def start(self) -> None:
+        self._listener.start()
+
+    def _filter(self, msg, data) -> bool:
+        if data.flags & LLKHF_INJECTED:                    # our own typing
+            return True
+        vk = data.vkCode
+        if msg in (WM_KEYDOWN, WM_SYSKEYDOWN):
+            mods = held_modifiers()
+            if vk == self._hot_vk and mods == self._mods:
+                self._swallow(vk)
+            if self.active and vk == self.stop_vk and not mods:
+                self._swallow(vk, stop_key=True)
+        elif vk in self._swallowed:                        # matching key-up
+            self._swallowed.discard(vk)
+            self._listener.suppress_event()
+        return True
+
+    def _swallow(self, vk: int, stop_key: bool = False) -> None:
+        if vk not in self._swallowed:                      # ignore key repeat
+            self._swallowed.add(vk)
+            self.stopped_with_key = stop_key
+            self.toggle.set()
+        self._listener.suppress_event()
+
+
+def wait_modifiers_released(timeout: float = 2.0) -> None:
+    """Typing while Ctrl/Alt are still held would trigger shortcuts."""
+    end = time.monotonic() + timeout
+    while held_modifiers() and time.monotonic() < end:
+        time.sleep(0.02)
+
+
+def type_mode(model: WhisperModel, keys: GlobalKeys, hotkey: str, stop_label: str) -> None:
+    from pynput import keyboard
+
+    typer = keyboard.Controller()
+    keys.start()
+    print("=" * 60)
+    print(f"  Type mode ready.  [{hotkey}] start/stop in any window")
+    print(f"  [{stop_label}] while dictating: finish and press {stop_label}")
+    print("  Ctrl+C here to quit")
+    print("=" * 60)
+
+    while True:
+        while not keys.toggle.wait(0.2):                   # stays Ctrl+C-able
+            pass
+        keys.toggle.clear()
+        keys.active = True
+        print("\n  🔴 Live... typing into the focused window")
+
+        typed = []
+
+        def type_final(text: str) -> None:
+            wait_modifiers_released()
+            typer.type((" " if typed else "") + text)
+            typed.append(text)
+
+        text = live_session(model, keys.toggle.is_set, type_final)
+        keys.active = False
+        if keys.stopped_with_key:
+            wait_modifiers_released()
+            typer.tap(keyboard.KeyCode.from_vk(keys.stop_vk))
+        keys.toggle.clear()
+        print(f"  ✅ {text}" if text else "  (no speech detected)")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Microphone dictation -> text.")
     parser.add_argument(
         "--live", action="store_true", help="transcribe while you speak"
     )
+    parser.add_argument(
+        "--type",
+        action="store_true",
+        help="global hotkey; type the text into the focused window (Windows only)",
+    )
     args = parser.parse_args()
 
-    if args.live:
-        key_label = (os.environ.get("STT_STOP_KEY", "").strip() or "enter").capitalize()
-        stop_keys = parse_stop_key(key_label)
-        if sys.platform == "win32":
-            os.system("")                                  # enable ANSI escapes
+    stop_label = (os.environ.get("STT_STOP_KEY", "").strip() or "enter").capitalize()
+    if args.type:
+        if sys.platform != "win32":
+            parser.error("--type is only supported on Windows for now")
+        hotkey = os.environ.get("STT_HOTKEY", "").strip() or DEFAULT_HOTKEY
+        keys = GlobalKeys(hotkey, stop_label)
+    elif args.live:
+        stop_keys = parse_stop_key(stop_label)
+    if (args.live or args.type) and sys.platform == "win32":
+        os.system("")                                      # enable ANSI escapes
 
     model = load_model()
     print(f"Language: {get_language() or 'auto-detect'}")
+    if args.type:
+        type_mode(model, keys, hotkey, stop_label)
+        return
+
     print("=" * 60)
     if args.live:
-        print(f"  Live dictation ready.  [{key_label}] stops  |  [q] quit")
+        print(f"  Live dictation ready.  [{stop_label}] stops  |  [q] quit")
     else:
         print("  Dictation ready.  [Enter] record  |  [q] quit")
     print("=" * 60)
@@ -356,7 +520,9 @@ def main() -> None:
             print("Goodbye!")
             break
         if args.live:
-            text = live_session(model, stop_keys, key_label)
+            with KeyReader() as keys:
+                print(f"  🔴 Live... press [{stop_label}] to stop")
+                text = live_session(model, lambda: keys.pressed(stop_keys))
             print(f"  ✅ {text}\n" if text else "  (no speech detected)\n")
         else:
             audio = record_until_enter()
