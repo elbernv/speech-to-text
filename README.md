@@ -55,6 +55,25 @@ STT_MODEL=medium uv run transcribe.py
 Available models (lightest to most accurate): `tiny`, `base`, `small`,
 `medium`, `large-v3`.
 
+### Language
+
+Transcription defaults to **Spanish** (`es`). Change it with `STT_LANGUAGE`:
+
+```bash
+# PowerShell
+$env:STT_LANGUAGE="en";   uv run transcribe.py   # English
+$env:STT_LANGUAGE="auto"; uv run transcribe.py   # auto-detect on each recording
+
+# bash
+STT_LANGUAGE=en uv run transcribe.py
+```
+
+Any language code supported by Whisper works (`en`, `es`, `fr`, `de`, `pt`, ...).
+Forcing a language is more reliable than `auto`, especially on short recordings.
+
+On PowerShell, `$env:` variables persist for the rest of the terminal session;
+use `Remove-Item Env:STT_LANGUAGE` to go back to the default.
+
 ## Tested on
 
 | Machine | OS | CPU | RAM | GPU | Device / model |
@@ -63,9 +82,11 @@ Available models (lightest to most accurate): `tiny`, `base`, `small`,
 
 Software: Python 3.13.3, faster-whisper 1.2.1, ctranslate2 4.8.1.
 
+Languages: tested with **Spanish**, with very good results. **English has not
+been tested yet.**
+
 ## Notes
 
-- **Transcription language**: Spanish (`LANGUAGE = "es"` in `transcribe.py`).
 - **Pascal GPUs (GTX 10xx)**: `compute_type=int8` is used (`int8_float16` is
   not supported on that architecture).
 - **Windows + GPU**: the script automatically adds the cuBLAS/cuDNN DLLs

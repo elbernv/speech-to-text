@@ -43,10 +43,20 @@ from faster_whisper import WhisperModel
 # ----------------------------- Configuration -----------------------------
 # Default model depends on the hardware. Can be forced with the STT_MODEL
 # environment variable (e.g. STT_MODEL=medium) or STT_DEVICE (cuda / cpu).
+# The language can be changed with STT_LANGUAGE (e.g. en, es, auto).
 GPU_MODEL = "large-v3"         # with an NVIDIA GPU: best quality
 CPU_MODEL = "small"            # no GPU (i5 laptop, etc.): fast and decent
-LANGUAGE = "es"                # force Spanish -> fewer language errors
+DEFAULT_LANGUAGE = "es"        # forcing a language -> fewer language errors
 SAMPLE_RATE = 16000            # Whisper's native format (16 kHz mono)
+
+
+def get_language() -> str | None:
+    """Transcription language from STT_LANGUAGE (e.g. 'en', 'es').
+
+    'auto' lets Whisper detect the language on each recording (returns None).
+    """
+    language = os.environ.get("STT_LANGUAGE", "").strip().lower() or DEFAULT_LANGUAGE
+    return None if language == "auto" else language
 
 
 def detect_hardware() -> tuple[str, str]:
@@ -123,7 +133,7 @@ def transcribe(model: WhisperModel, audio: np.ndarray) -> None:
 
     segments, _info = model.transcribe(
         audio,
-        language=LANGUAGE,
+        language=get_language(),
         vad_filter=True,                                   # trims silences
         vad_parameters=dict(min_silence_duration_ms=500),
         condition_on_previous_text=False,                  # don't carry over errors
@@ -140,6 +150,7 @@ def transcribe(model: WhisperModel, audio: np.ndarray) -> None:
 
 def main() -> None:
     model = load_model()
+    print(f"Language: {get_language() or 'auto-detect'}")
     print("=" * 60)
     print("  Dictation ready.  [Enter] record  |  [q] quit")
     print("=" * 60)
