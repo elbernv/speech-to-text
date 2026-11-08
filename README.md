@@ -55,6 +55,14 @@ STT_MODEL=medium uv run transcribe.py
 Available models (lightest to most accurate): `tiny`, `base`, `small`,
 `medium`, `large-v3`.
 
+## Tested on
+
+| Machine | OS | CPU | RAM | GPU | Device / model |
+|---------|----|-----|-----|-----|----------------|
+| Desktop | Windows 11 Pro (build 26200) | Intel Core i5-12400F (6C/12T) | 32 GB | NVIDIA GeForce GTX 1070 8 GB (driver 582.66, CUDA 13.0) | `cuda` / `large-v3` (`int8`) |
+
+Software: Python 3.13.3, faster-whisper 1.2.1, ctranslate2 4.8.1.
+
 ## Notes
 
 - **Transcription language**: Spanish (`LANGUAGE = "es"` in `transcribe.py`).
