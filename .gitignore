@@ -7,4 +7,46 @@ wheels/
 *.egg-info
 
 # Virtual environments
-.venv
+.venv/
+.env
+.env.*
+!.env.example
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.code-workspace
+*.swp
+*~
+
+# AI agents / coding assistants
+.claude/
+CLAUDE.md
+AGENTS.md
+.cursor/
+.cursorrules
+.windsurf/
+.windsurfrules
+.codeium/
+.continue/
+.aider*
+.gemini/
+GEMINI.md
+.codex/
+.cline/
+.clinerules
+.roo/
+.kiro/
+.github/copilot-instructions.md
+
+# Operating system
+.DS_Store
+Thumbs.db
+desktop.ini
