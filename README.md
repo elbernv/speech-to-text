@@ -32,6 +32,29 @@ uv run transcribe.py
 - `[Enter]` → stop and **print the text** 📝
 - `[q]` → quit
 
+### Live mode
+
+```bash
+uv run transcribe.py --live
+```
+
+The text appears on a single line while you speak. The gray part is a draft
+that keeps updating; every time you pause (~0.6 s) it becomes final (normal
+color). Press the stop key to finish and get the full text (✅).
+
+The stop key defaults to `Enter` and can be changed with `STT_STOP_KEY`
+(`enter`, `space`, `esc`, `tab` or any single character):
+
+```bash
+# PowerShell
+$env:STT_STOP_KEY="esc"; uv run transcribe.py --live
+
+# bash
+STT_STOP_KEY=esc uv run transcribe.py --live
+```
+
+The terminal must have focus for the stop key to be detected.
+
 ## Automatic model selection
 
 | Detected hardware | Device | Default model |
